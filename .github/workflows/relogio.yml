@@ -1,0 +1,30 @@
+name: Rotina Diaria de Checagem
+on:
+  schedule:
+    # O GitHub usa o horário de Londres (UTC). 09:00 da manhã no Brasil é 12:00 em Londres.
+    - cron: '0 12 * * *'
+  workflow_dispatch: # Isso permite que você aperte um botão para testar a qualquer hora!
+
+jobs:
+  executar-robo:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Copiando os arquivos
+      uses: actions/checkout@v4
+
+    - name: Ligando o Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+
+    - name: Instalando as ferramentas necessárias
+      run: |
+        pip install google-genai requests
+
+    - name: Rodando o Script principal
+      env:
+        EMAIL_USUARIO: ${{ secrets.EMAIL_USUARIO }}
+        EMAIL_SENHA: ${{ secrets.EMAIL_SENHA }}
+        GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+      run: python script.py
