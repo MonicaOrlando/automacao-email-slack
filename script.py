@@ -90,28 +90,44 @@ def buscar_e_processar():
     print("\nProcesso finalizado com sucesso!")
 
 def extrair_rejeicoes_python(texto_pdf):
-    """
-    Varre o texto do PDF buscando blocos que contenham 'CB Rejected'
-    e extrai o nome do favorecido e o valor do pagamento.
-    """
     rejeicoes = []
     
-    # Divide o documento em blocos de transação baseados no delimitador do relatório
+    # Divide o relatório pelas marcações das transações
+    # Usamos divisores comuns do CitiDirect
     blocos = re.split(r'Transaction Initiation Payment Details Report|Discount Rate', texto_pdf)
     
     for bloco in blocos:
         if "CB REJECTED" in bloco.upper():
-            # Extrai o nome do beneficiário/favorecido
-            match_nome = re.search(r'Beneficiary or Debit Party Name\s*\|\s*([^\n]+)', bloco, re.IGNORECASE)
-            # Extrai o valor do pagamento
-            match_valor = re.search(r'Payment Currency/Payment Amount\s*\|\s*([^\n]+)', bloco, re.IGNORECASE)
+            # Busca o nome do beneficiário aceitando quebras de linha e barras
+            match_nome = re.search(r'Beneficiary or Debit Party Name[\s\n]*\|?[\s\n]*([^\n\r|]+)', bloco, re.IGNORECASE)
             
-            nome = match_nome.group(1).strip() if match_nome else "Nome não localizado"
-            valor = match_valor.group(1).strip() if match_valor else "Valor não localizado"
+            # Busca o valor aceitando quebras de linha
+            match_valor = re.search(r'Payment Currency/Payment Amount[\s\n]*\|?[\s\n]*([^\n\r]+)', bloco, re.IGNORECASE)
             
-            rejeicoes.append(f"• *Favorecido:* {nome} | *Valor:* {valor}")
+            nome = match_nome.group(1).strip() if match_nome else None
+            valor = match_valor.group(1).strip() if match_valor else None
             
-    return list(set(rejeicoes)) # Remove duplicados se houver
+            # Fallback caso a expressão acima falhe por formato atípico
+            if not nome:
+                linhas = [l.strip() for l in bloco.split('\n') if l.strip()]
+                for i, linha in enumerate(linhas):
+                    if "Beneficiary or Debit Party Name" in linha and i + 1 < len(linhas):
+                        nome = linhas[i + 1].replace('|', '').strip()
+                        break
+            
+            if not valor:
+                linhas = [l.strip() for l in bloco.split('\n') if l.strip()]
+                for i, linha in enumerate(linhas):
+                    if "Payment Currency/Payment Amount" in linha and i + 1 < len(linhas):
+                        valor = linhas[i + 1].replace('|', '').strip()
+                        break
+
+            nome_final = nome if nome else "Nome não localizado"
+            valor_final = valor if valor else "Valor não localizado"
+            
+            rejeicoes.append(f"• *Favorecido:* `{nome_final}` | *Valor:* `{valor_final}`")
+            
+    return list(set(rejeicoes))
 
 def processar_anexos(msg, assunto_email):
     for part in msg.walk():
