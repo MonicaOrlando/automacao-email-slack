@@ -7,7 +7,7 @@ import json
 from datetime import datetime, timedelta
 from google import genai
 
-# Aumenta o limite de bytes do IMAP para não estourar memória com listas grandes
+# Aumenta o limite de bytes do IMAP
 imaplib._MAXLINE = 10000000
 
 # Credenciais do ambiente
@@ -44,7 +44,7 @@ def buscar_e_processar():
     
     selecionar_caixa_de_emails(mail)
 
-    # Filtra e-mails apenas dos últimos 7 dias para evitar trazer milhares de mensagens
+    # Filtra e-mails apenas dos últimos 7 dias
     data_limite = (datetime.now() - timedelta(days=7)).strftime("%d-%b-%Y")
     criterio_busca = f'(SINCE "{data_limite}")'
     
@@ -124,8 +124,9 @@ def processar_anexos(msg, assunto_email):
             - Se NÃO houver nenhuma ocorrência de 'CB REJECTED', responda estritamente com a palavra: NADA
             """
             
+            # Atualizado para o modelo estável gemini-1.5-flash
             response = client.models.generate_content(
-                model="gemini-2.5-flash",
+                model="gemini-1.5-flash",
                 contents=[documento, prompt]
             )
             
