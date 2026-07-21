@@ -8,10 +8,10 @@ import time
 from datetime import datetime
 from google import genai
 
-# Aumenta el limite de bytes del IMAP
+# Aumenta o limite de bytes do IMAP
 imaplib._MAXLINE = 10000000
 
-# Credenciales del ambiente
+# Credenciais do ambiente
 EMAIL_USER = os.getenv("EMAIL_USUARIO")
 EMAIL_PASS = os.getenv("EMAIL_SENHA")
 GEMINI_KEY = os.getenv("GEMINI_API_KEY")
@@ -113,19 +113,19 @@ def processar_anexos(msg, assunto_email):
             
             documento = client.files.upload(file="temporario.pdf")
             
+            # Prompt insensível a maiúsculas/minúsculas
             prompt = """
-            Examine detalhadamente este documento de comprovante/relatório de pagamento.
+            Examine detalhadamente este documento PDF de comprovante ou relatório de pagamento.
             
             Sua missão:
-            1. Procure por qualquer linha, tabela ou registro que contenha o status de erro ou rejeição 'CB REJECTED' (ou 'CB_REJECTED').
-            2. Para cada registro com 'CB REJECTED', identifique e extraia o nome associado no campo 'Beneficiary or debit party name' (ou nome do beneficiário/favorecido).
+            1. Procure por qualquer ocorrência do termo de rejeição/erro "CB REJECTED" (ignore diferenças entre maiúsculas e minúsculas, ou seja, considere "CB Rejected", "cb rejected", "CB_REJECTED", etc.).
+            2. Para CADA registro onde encontrar esse termo de erro/rejeição, extraia o nome do beneficiário/favorecido associado (geralmente sob colunas como 'Beneficiary or debit party name', 'Beneficiário', 'Favorecido' ou nome da empresa/pessoa).
             
-            Formato da resposta:
-            - Se encontrar rejeições, retorne APENAS uma lista simples com os nomes dos beneficiários rejeitados (um por linha).
-            - Se NÃO houver nenhuma ocorrência de 'CB REJECTED', responda estritamente com a palavra: NADA
+            Formato OBRIGATÓRIO de resposta:
+            - Se encontrar pelo menos uma rejeição, liste APENAS os nomes dos beneficiários rejeitados (um por linha), sem textos explicativos adicionais.
+            - Se NÃO encontrar nenhuma ocorrência do termo "CB REJECTED" (em qualquer combinação de maiúsculas/minúsculas), responda APENAS a palavra: NADA
             """
             
-            # Tentativas com espera para evitar o limite de cota (Quota 429)
             for tentativa in range(3):
                 try:
                     response = client.models.generate_content(
@@ -135,20 +135,20 @@ def processar_anexos(msg, assunto_email):
                     resultado_ia = response.text.strip()
                     print(f"📋 Diagnóstico do Gemini:\n{resultado_ia}")
                     
+                    # Verificação flexível para identificar o retorno "NADA"
                     if "NADA" not in resultado_ia.upper():
                         enviar_para_slack(assunto_email, resultado_ia)
                     else:
-                        print("Nenhum erro 'CB REJECTED' encontrado neste anexo.")
+                        print("Nenhum erro 'CB REJECTED' / 'CB Rejected' encontrado neste anexo.")
                     break
                 except Exception as e:
                     if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
-                        print(f"⚠️ Limite de requisições atingido. Aguardando 15 segundos para tentar novamente (Tentativa {tentativa + 1}/3)...")
+                        print(f"⚠️ Limite de requisições atingido. Aguardando 15 segundos (Tentativa {tentativa + 1}/3)...")
                         time.sleep(15)
                     else:
                         print(f"❌ Erro ao consultar o Gemini: {e}")
                         break
             
-            # Pausa preventiva entre PDFs
             time.sleep(5)
 
 def enviar_para_slack(titulo_email, nomes_com_erro):
