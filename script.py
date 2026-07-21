@@ -61,7 +61,6 @@ def buscar_e_processar():
     print(f"Total de e-mails recebidos hoje: {len(email_ids)}.")
 
     for e_id in email_ids:
-        # Busca o cabeçalho do e-mail
         res, msg_data = mail.fetch(e_id, "(BODY.PEEK[HEADER.FIELDS (SUBJECT)])")
         for response_part in msg_data:
             if isinstance(response_part, tuple):
@@ -79,11 +78,9 @@ def buscar_e_processar():
                 
                 subject_lower = subject.lower()
                 
-                # Checa se o assunto contém as palavras-chave
                 if any(p in subject_lower for p in PALAVRAS_CHAVE) and ("comprovante" in subject_lower or "pagamento" in subject_lower):
                     print(f"\n✅ E-MAIL ALVO ENCONTRADO: {subject}")
                     
-                    # Baixa a mensagem completa com o anexo
                     _, full_msg_data = mail.fetch(e_id, "(RFC822)")
                     for full_part in full_msg_data:
                         if isinstance(full_part, tuple):
@@ -108,25 +105,28 @@ def processar_anexos(msg, assunto_email):
             with open("temporario.pdf", "wb") as f:
                 f.write(pdf_data)
             
+            # Pausa inicial de 10 segundos para dar tempo entre requisições
+            time.sleep(10)
+            
             print("🤖 Enviando PDF para análise do Gemini...")
             client = genai.Client(api_key=GEMINI_KEY)
             
             documento = client.files.upload(file="temporario.pdf")
             
-            # Prompt insensível a maiúsculas/minúsculas
             prompt = """
-            Examine detalhadamente este documento PDF de comprovante ou relatório de pagamento.
+            Examine este relatório/comprovante bancário em PDF.
             
             Sua missão:
-            1. Procure por qualquer ocorrência do termo de rejeição/erro "CB REJECTED" (ignore diferenças entre maiúsculas e minúsculas, ou seja, considere "CB Rejected", "cb rejected", "CB_REJECTED", etc.).
-            2. Para CADA registro onde encontrar esse termo de erro/rejeição, extraia o nome do beneficiário/favorecido associado (geralmente sob colunas como 'Beneficiary or debit party name', 'Beneficiário', 'Favorecido' ou nome da empresa/pessoa).
+            1. Procure por qualquer transação cujo "Status" seja "CB Rejected" ou "CB REJECTED".
+            2. Para CADA transação com status "CB Rejected", extraia o nome que está no campo "Beneficiary or Debit Party Name".
             
-            Formato OBRIGATÓRIO de resposta:
-            - Se encontrar pelo menos uma rejeição, liste APENAS os nomes dos beneficiários rejeitados (um por linha), sem textos explicativos adicionais.
-            - Se NÃO encontrar nenhuma ocorrência do termo "CB REJECTED" (em qualquer combinação de maiúsculas/minúsculas), responda APENAS a palavra: NADA
+            Instruções estritas de formato:
+            - Se encontrar transações com "CB Rejected", retorne apenas a lista com o nome dos beneficiários afetados (um por linha).
+            - Se NÃO houver nenhuma ocorrência de "CB Rejected", responda EXATAMENTE com a palavra: NADA
             """
             
-            for tentativa in range(3):
+            # 5 tentativas com pausa progressiva para contornar o limite de cota
+            for tentativa in range(5):
                 try:
                     response = client.models.generate_content(
                         model="gemini-2.0-flash",
@@ -135,25 +135,23 @@ def processar_anexos(msg, assunto_email):
                     resultado_ia = response.text.strip()
                     print(f"📋 Diagnóstico do Gemini:\n{resultado_ia}")
                     
-                    # Verificação flexível para identificar o retorno "NADA"
                     if "NADA" not in resultado_ia.upper():
                         enviar_para_slack(assunto_email, resultado_ia)
                     else:
-                        print("Nenhum erro 'CB REJECTED' / 'CB Rejected' encontrado neste anexo.")
+                        print("Nenhum erro 'CB Rejected' encontrado neste anexo.")
                     break
                 except Exception as e:
                     if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
-                        print(f"⚠️ Limite de requisições atingido. Aguardando 15 segundos (Tentativa {tentativa + 1}/3)...")
-                        time.sleep(15)
+                        tempo_espera = 25 + (tentativa * 10)
+                        print(f"⚠️ Limite de requisições atingido. Aguardando {tempo_espera}s para tentar novamente (Tentativa {tentativa + 1}/5)...")
+                        time.sleep(tempo_espera)
                     else:
                         print(f"❌ Erro ao consultar o Gemini: {e}")
                         break
-            
-            time.sleep(5)
 
 def enviar_para_slack(titulo_email, nomes_com_erro):
     print("🚨 Disparando notificação no Slack...")
-    texto_mensagem = f"⚠️ *Erro de Pagamento Identificado (CB REJECTED)!*\n\n*E-mail de Origem:* {titulo_email}\n\n*Beneficiários com Erro:*\n{nomes_com_erro}"
+    texto_mensagem = f"⚠️ *Erro de Pagamento Identificado (CB Rejected)!*\n\n*E-mail de Origem:* {titulo_email}\n\n*Beneficiários com Erro:*\n{nomes_com_erro}"
     payload = {"text": texto_mensagem}
     requests.post(SLACK_URL, json=payload)
 
