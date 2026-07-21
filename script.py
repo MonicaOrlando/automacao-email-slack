@@ -4,7 +4,7 @@ import email
 from email.header import decode_header
 import requests
 import json
-from datetime import datetime, timedelta
+from datetime import datetime
 from google import genai
 
 # Aumenta o limite de bytes do IMAP
@@ -44,20 +44,20 @@ def buscar_e_processar():
     
     selecionar_caixa_de_emails(mail)
 
-    # Filtra e-mails apenas dos últimos 7 dias
-    data_limite = (datetime.now() - timedelta(days=7)).strftime("%d-%b-%Y")
-    criterio_busca = f'(SINCE "{data_limite}")'
+    # Filtra APENAS e-mails recebidos na data de HOJE
+    data_hoje = datetime.now().strftime("%d-%b-%Y")
+    criterio_busca = f'(ON "{data_hoje}")'
     
-    print(f"Buscando e-mails recebidos a partir de {data_limite}...")
+    print(f"Buscando apenas e-mails recebidos hoje ({data_hoje})...")
     status, messages = mail.search(None, criterio_busca)
     
     if status != 'OK' or not messages[0]:
-        print("Nenhum e-mail recente encontrado.")
+        print("Nenhum e-mail recebido hoje até o momento.")
         mail.logout()
         return
 
     email_ids = messages[0].split()
-    print(f"Total de e-mails recentes encontrados: {len(email_ids)}.")
+    print(f"Total de e-mails recebidos hoje: {len(email_ids)}.")
 
     for e_id in email_ids:
         # Busca o cabeçalho do e-mail
@@ -124,9 +124,9 @@ def processar_anexos(msg, assunto_email):
             - Se NÃO houver nenhuma ocorrência de 'CB REJECTED', responda estritamente com a palavra: NADA
             """
             
-            # Atualizado para o modelo estável gemini-1.5-flash
+            # Modelo atualizado compatível com a SDK nova (gemini-2.0-flash)
             response = client.models.generate_content(
-                model="gemini-1.5-flash",
+                model="gemini-2.0-flash",
                 contents=[documento, prompt]
             )
             
