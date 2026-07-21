@@ -25,29 +25,38 @@ def buscar_e_processar():
     status, messages = mail.search(None, "ALL")
     email_ids = messages[0].split()
     total_emails = len(email_ids)
-    print(f"Total de e-mails na caixa: {total_emails}. Verificando os últimos 30...")
+    
+    # Aumentado para os últimos 100 e-mails
+    limite = 100
+    ultimos_ids = email_ids[-limite:] if total_emails >= limite else email_ids
+    print(f"Total de e-mails na caixa: {total_emails}. Verificando os últimos {len(ultimos_ids)}...")
 
-    # Analisa os últimos 30 e-mails
-    for e_id in email_ids[-30:]:
-        res, msg_data = mail.fetch(e_id, "(RFC822)")
+    for e_id in ultimos_ids:
+        # Busca apenas o cabeçalho para ser mais rápido
+        res, msg_data = mail.fetch(e_id, "(BODY.PEEK[HEADER.FIELDS (SUBJECT)])")
         for response_part in msg_data:
             if isinstance(response_part, tuple):
                 msg = email.message_from_bytes(response_part[1])
                 
-                # Trata o assunto do e-mail
                 subject, encoding = decode_header(msg["Subject"])[0]
                 if isinstance(subject, bytes):
                     subject = subject.decode(encoding or "utf-8", errors="ignore")
                 
                 subject_lower = subject.lower()
-                print(f"🔍 Analisando e-mail: {subject}")
                 
+                # Se encontrar o assunto correto, aí sim baixa o e-mail completo com anexo
                 if any(p in subject_lower for p in PALAVRAS_CHAVE) and ("comprovante" in subject_lower or "pagamento" in subject_lower):
-                    print(f"✅ E-MAIL ALVO ENCONTRADO: {subject}")
-                    processar_anexos(msg, subject)
+                    print(f"\n✅ E-MAIL ALVO ENCONTRADO: {subject}")
+                    
+                    # Baixa o e-mail completo para pegar o PDF
+                    _, full_msg_data = mail.fetch(e_id, "(RFC822)")
+                    for full_part in full_msg_data:
+                        if isinstance(full_part, tuple):
+                            full_msg = email.message_from_bytes(full_part[1])
+                            processar_anexos(full_msg, subject)
 
     mail.logout()
-    print("Processo finalizado!")
+    print("\nProcesso finalizado com sucesso!")
 
 def processar_anexos(msg, assunto_email):
     for part in msg.walk():
