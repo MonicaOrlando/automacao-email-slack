@@ -4,7 +4,11 @@ import email
 from email.header import decode_header
 import requests
 import json
+from datetime import datetime, timedelta
 from google import genai
+
+# Aumenta o limite de bytes do IMAP para não estourar memória com listas grandes
+imaplib._MAXLINE = 10000000
 
 # Credenciais do ambiente
 EMAIL_USER = os.getenv("EMAIL_USUARIO")
@@ -15,7 +19,6 @@ SLACK_URL = os.getenv("SLACK_WEBHOOK_URL")
 PALAVRAS_CHAVE = ["linkedstore", "viver", "mandae"]
 
 def selecionar_caixa_de_emails(mail):
-    # Lista de nomes possíveis para a pasta de todos os e-mails no Gmail (depende do idioma)
     pastas_possiveis = [
         '"[Gmail]/Todos os e-mails"',
         '"[Gmail]/All Mail"',
@@ -30,7 +33,7 @@ def selecionar_caixa_de_emails(mail):
             print(f"✅ Pasta selecionada com sucesso: {pasta}")
             return True
             
-    print("⚠️ Não foi possível selecionar 'Todos os e-mails'. Usando 'INBOX' padrão...")
+    print("⚠️ Usando 'INBOX' padrão...")
     mail.select('INBOX')
     return True
 
@@ -39,18 +42,24 @@ def buscar_e_processar():
     mail = imaplib.IMAP4_SSL("imap.gmail.com")
     mail.login(EMAIL_USER, EMAIL_PASS)
     
-    # Seleciona a caixa correta
     selecionar_caixa_de_emails(mail)
 
-    status, messages = mail.search(None, "ALL")
-    email_ids = messages[0].split()
+    # Filtra e-mails apenas dos últimos 7 dias para evitar trazer milhares de mensagens
+    data_limite = (datetime.now() - timedelta(days=7)).strftime("%d-%b-%Y")
+    criterio_busca = f'(SINCE "{data_limite}")'
     
-    # Analisa os últimos 100 e-mails
-    limite = 100
-    ultimos_ids = email_ids[-limite:] if len(email_ids) >= limite else email_ids
-    print(f"Verificando os últimos {len(ultimos_ids)} e-mails da conta...")
+    print(f"Buscando e-mails recebidos a partir de {data_limite}...")
+    status, messages = mail.search(None, criterio_busca)
+    
+    if status != 'OK' or not messages[0]:
+        print("Nenhum e-mail recente encontrado.")
+        mail.logout()
+        return
 
-    for e_id in ultimos_ids:
+    email_ids = messages[0].split()
+    print(f"Total de e-mails recentes encontrados: {len(email_ids)}.")
+
+    for e_id in email_ids:
         # Busca o cabeçalho do e-mail
         res, msg_data = mail.fetch(e_id, "(BODY.PEEK[HEADER.FIELDS (SUBJECT)])")
         for response_part in msg_data:
@@ -69,9 +78,9 @@ def buscar_e_processar():
                 
                 subject_lower = subject.lower()
                 
-                # Checa se é um dos e-mails alvo
+                # Checa se o assunto contém as palavras-chave
                 if any(p in subject_lower for p in PALAVRAS_CHAVE) and ("comprovante" in subject_lower or "pagamento" in subject_lower):
-                    print(f"\n✅ E-MAIL ENCONTRADO: {subject}")
+                    print(f"\n✅ E-MAIL ALVO ENCONTRADO: {subject}")
                     
                     # Baixa a mensagem completa com o anexo
                     _, full_msg_data = mail.fetch(e_id, "(RFC822)")
@@ -81,7 +90,7 @@ def buscar_e_processar():
                             processar_anexos(full_msg, subject)
 
     mail.logout()
-    print("\nProcesso finalizado!")
+    print("\nProcesso finalizado com sucesso!")
 
 def processar_anexos(msg, assunto_email):
     for part in msg.walk():
@@ -98,7 +107,7 @@ def processar_anexos(msg, assunto_email):
             with open("temporario.pdf", "wb") as f:
                 f.write(pdf_data)
             
-            print("🤖 Enviando PDF para análise no Gemini...")
+            print("🤖 Enviando PDF para análise do Gemini...")
             client = genai.Client(api_key=GEMINI_KEY)
             
             documento = client.files.upload(file="temporario.pdf")
@@ -126,7 +135,7 @@ def processar_anexos(msg, assunto_email):
             if "NADA" not in resultado_ia.upper():
                 enviar_para_slack(assunto_email, resultado_ia)
             else:
-                print("Nenhum erro 'CB REJECTED' encontrado no anexo.")
+                print("Nenhum erro 'CB REJECTED' encontrado neste anexo.")
 
 def enviar_para_slack(titulo_email, nomes_com_erro):
     print("🚨 Disparando notificação no Slack...")
