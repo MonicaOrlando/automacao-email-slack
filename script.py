@@ -4,13 +4,14 @@ import email
 from email.header import decode_header
 import requests
 import json
+import time
 from datetime import datetime
 from google import genai
 
-# Aumenta o limite de bytes do IMAP
+# Aumenta el limite de bytes del IMAP
 imaplib._MAXLINE = 10000000
 
-# Credenciais do ambiente
+# Credenciales del ambiente
 EMAIL_USER = os.getenv("EMAIL_USUARIO")
 EMAIL_PASS = os.getenv("EMAIL_SENHA")
 GEMINI_KEY = os.getenv("GEMINI_API_KEY")
@@ -124,19 +125,31 @@ def processar_anexos(msg, assunto_email):
             - Se NÃO houver nenhuma ocorrência de 'CB REJECTED', responda estritamente com a palavra: NADA
             """
             
-            # Modelo atualizado compatível com a SDK nova (gemini-2.0-flash)
-            response = client.models.generate_content(
-                model="gemini-2.0-flash",
-                contents=[documento, prompt]
-            )
+            # Tentativas com espera para evitar o limite de cota (Quota 429)
+            for tentativa in range(3):
+                try:
+                    response = client.models.generate_content(
+                        model="gemini-2.0-flash",
+                        contents=[documento, prompt]
+                    )
+                    resultado_ia = response.text.strip()
+                    print(f"📋 Diagnóstico do Gemini:\n{resultado_ia}")
+                    
+                    if "NADA" not in resultado_ia.upper():
+                        enviar_para_slack(assunto_email, resultado_ia)
+                    else:
+                        print("Nenhum erro 'CB REJECTED' encontrado neste anexo.")
+                    break
+                except Exception as e:
+                    if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
+                        print(f"⚠️ Limite de requisições atingido. Aguardando 15 segundos para tentar novamente (Tentativa {tentativa + 1}/3)...")
+                        time.sleep(15)
+                    else:
+                        print(f"❌ Erro ao consultar o Gemini: {e}")
+                        break
             
-            resultado_ia = response.text.strip()
-            print(f"📋 Diagnóstico do Gemini:\n{resultado_ia}")
-            
-            if "NADA" not in resultado_ia.upper():
-                enviar_para_slack(assunto_email, resultado_ia)
-            else:
-                print("Nenhum erro 'CB REJECTED' encontrado neste anexo.")
+            # Pausa preventiva entre PDFs
+            time.sleep(5)
 
 def enviar_para_slack(titulo_email, nomes_com_erro):
     print("🚨 Disparando notificação no Slack...")
