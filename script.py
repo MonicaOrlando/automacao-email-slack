@@ -4,18 +4,16 @@ import email
 from email.header import decode_header
 import requests
 import json
-import time
+import re
 from datetime import datetime
 from pypdf import PdfReader
-from google import genai
 
-# Aumenta o limite de bytes do IMAP para suportar listas grandes
+# Aumenta o limite de bytes do IMAP
 imaplib._MAXLINE = 10000000
 
 # Credenciais do ambiente (GitHub Secrets)
 EMAIL_USER = os.getenv("EMAIL_USUARIO")
 EMAIL_PASS = os.getenv("EMAIL_SENHA")
-GEMINI_KEY = os.getenv("GEMINI_API_KEY")
 SLACK_URL = os.getenv("SLACK_WEBHOOK_URL")
 
 PALAVRAS_CHAVE = ["linkedstore", "viver", "mandae"]
@@ -46,7 +44,7 @@ def buscar_e_processar():
     
     selecionar_caixa_de_emails(mail)
 
-    # Filtra APENAS e-mails recebidos na data de HOJE
+    # Filtra APENAS e-mails recebidos HOJE
     data_hoje = datetime.now().strftime("%d-%b-%Y")
     criterio_busca = f'(ON "{data_hoje}")'
     
@@ -79,7 +77,6 @@ def buscar_e_processar():
                 
                 subject_lower = subject.lower()
                 
-                # Verifica palavras-chave no assunto
                 if any(p in subject_lower for p in PALAVRAS_CHAVE) and ("comprovante" in subject_lower or "pagamento" in subject_lower):
                     print(f"\n✅ E-MAIL ALVO ENCONTRADO: {subject}")
                     
@@ -92,6 +89,30 @@ def buscar_e_processar():
     mail.logout()
     print("\nProcesso finalizado com sucesso!")
 
+def extrair_rejeicoes_python(texto_pdf):
+    """
+    Varre o texto do PDF buscando blocos que contenham 'CB Rejected'
+    e extrai o nome do favorecido e o valor do pagamento.
+    """
+    rejeicoes = []
+    
+    # Divide o documento em blocos de transação baseados no delimitador do relatório
+    blocos = re.split(r'Transaction Initiation Payment Details Report|Discount Rate', texto_pdf)
+    
+    for bloco in blocos:
+        if "CB REJECTED" in bloco.upper():
+            # Extrai o nome do beneficiário/favorecido
+            match_nome = re.search(r'Beneficiary or Debit Party Name\s*\|\s*([^\n]+)', bloco, re.IGNORECASE)
+            # Extrai o valor do pagamento
+            match_valor = re.search(r'Payment Currency/Payment Amount\s*\|\s*([^\n]+)', bloco, re.IGNORECASE)
+            
+            nome = match_nome.group(1).strip() if match_nome else "Nome não localizado"
+            valor = match_valor.group(1).strip() if match_valor else "Valor não localizado"
+            
+            rejeicoes.append(f"• *Favorecido:* {nome} | *Valor:* {valor}")
+            
+    return list(set(rejeicoes)) # Remove duplicados se houver
+
 def processar_anexos(msg, assunto_email):
     for part in msg.walk():
         if part.get_content_maintype() == 'multipart' or part.get('Content-Disposition') is None:
@@ -102,66 +123,31 @@ def processar_anexos(msg, assunto_email):
             print(f"\n📎 Analisando anexo: {filename}")
             pdf_data = part.get_payload(decode=True)
             
-            # Salva temporariamente
             with open("temporario.pdf", "wb") as f:
                 f.write(pdf_data)
             
-            # 1. Extração local de texto via Python (pypdf)
             reader = PdfReader("temporario.pdf")
             texto_pdf = ""
             for page in reader.pages:
                 texto_pdf += page.extract_text() or ""
             
-            # Checa localmente se existe "CB Rejected"
-            if "CB REJECTED" not in texto_pdf.upper():
-                print("ℹ️ Nenhuma rejeição ('CB Rejected') identificada no texto do PDF.")
-                continue
-
-            print("🚨 ATENÇÃO: Status 'CB Rejected' detectado no PDF! Extraindo nomes com o Gemini...")
-            
-            # 2. Envia o texto extraído para o Gemini (Economiza cota de API)
-            client = genai.Client(api_key=GEMINI_KEY)
-            
-            prompt = f"""
-            Analise o texto a seguir extraído de um relatório financeiro.
-            
-            Sua missão:
-            Identifique todas as transações com status 'CB Rejected' (ou 'CB REJECTED') e extraia apenas o nome do beneficiário/favorecido ("Beneficiary or Debit Party Name").
-            
-            Texto do relatório:
-            {texto_pdf[:15000]}
-            
-            Resposta esperada:
-            Retorne APENAS uma lista simples com os nomes dos beneficiários rejeitados (um por linha). Se não encontrar o nome de nenhum, responda NADA.
-            """
-            
-            sucesso = False
-            for tentativa in range(5):
-                try:
-                    response = client.models.generate_content(
-                        model="gemini-2.0-flash",
-                        contents=prompt
-                    )
-                    resultado_ia = response.text.strip()
-                    print(f"📋 Resposta da IA:\n{resultado_ia}")
-                    
-                    if "NADA" not in resultado_ia.upper():
-                        enviar_para_slack(assunto_email, resultado_ia)
-                    sucesso = True
-                    break
-                except Exception as e:
-                    tempo_espera = 20 + (tentativa * 10)
-                    print(f"⚠️ Erro ao consultar Gemini (Tentativa {tentativa + 1}/5): {e}. Aguardando {tempo_espera}s...")
-                    time.sleep(tempo_espera)
-            
-            # Fallback de segurança se a API falhar
-            if not sucesso:
-                print("❌ Não foi possível obter resposta do Gemini após retentativas. Enviando alerta direto ao Slack...")
-                enviar_para_slack(assunto_email, "⚠️ *Atenção:* O status 'CB Rejected' foi encontrado neste anexo, mas a cota da IA excedeu no momento. Favor verificar o comprovante anexado ao e-mail manualmente.")
+            if "CB REJECTED" in texto_pdf.upper():
+                print("🚨 Status 'CB Rejected' detectado! Extraindo detalhes via Python...")
+                
+                lista_erros = extrair_rejeicoes_python(texto_pdf)
+                
+                if lista_erros:
+                    detalhes_formatados = "\n".join(lista_erros)
+                else:
+                    detalhes_formatados = "• Status 'CB Rejected' encontrado no PDF (verifique o documento em anexo)."
+                
+                enviar_para_slack(assunto_email, detalhes_formatados)
+            else:
+                print("ℹ️ Nenhuma rejeição ('CB Rejected') identificada neste PDF.")
 
 def enviar_para_slack(titulo_email, nomes_com_erro):
     print("🚨 Disparando notificação no Slack...")
-    texto_mensagem = f"⚠️ *Erro de Pagamento Identificado (CB Rejected)!*\n\n*E-mail de Origem:* {titulo_email}\n\n*Detalhes / Beneficiários com Erro:*\n{nomes_com_erro}"
+    texto_mensagem = f"⚠️ *Erro de Pagamento Identificado (CB Rejected)!*\n\n*E-mail de Origem:* {titulo_email}\n\n*Detalhes dos Lançamentos Rejeitados:*\n{nomes_com_erro}"
     payload = {"text": texto_mensagem}
     requests.post(SLACK_URL, json=payload)
 
