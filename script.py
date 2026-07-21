@@ -14,14 +14,33 @@ SLACK_URL = os.getenv("SLACK_WEBHOOK_URL")
 
 PALAVRAS_CHAVE = ["linkedstore", "viver", "mandae"]
 
+def selecionar_caixa_de_emails(mail):
+    # Lista de nomes possíveis para a pasta de todos os e-mails no Gmail (depende do idioma)
+    pastas_possiveis = [
+        '"[Gmail]/Todos os e-mails"',
+        '"[Gmail]/All Mail"',
+        '[Gmail]/Todos os e-mails',
+        '[Gmail]/All Mail',
+        'INBOX'
+    ]
+    
+    for pasta in pastas_possiveis:
+        status, _ = mail.select(pasta)
+        if status == 'OK':
+            print(f"✅ Pasta selecionada com sucesso: {pasta}")
+            return True
+            
+    print("⚠️ Não foi possível selecionar 'Todos os e-mails'. Usando 'INBOX' padrão...")
+    mail.select('INBOX')
+    return True
+
 def buscar_e_processar():
     print("Conectando ao Gmail...")
     mail = imaplib.IMAP4_SSL("imap.gmail.com")
     mail.login(EMAIL_USER, EMAIL_PASS)
     
-    # IMPORTANTE: Acessa "Todos os e-mails" para pegar mensagens com etiquetas como "Financeiro - NS"
-    mail.select('"[Gmail]/All Mail"')
-    print("Acessado '[Gmail]/All Mail' com sucesso!")
+    # Seleciona a caixa correta
+    selecionar_caixa_de_emails(mail)
 
     status, messages = mail.search(None, "ALL")
     email_ids = messages[0].split()
