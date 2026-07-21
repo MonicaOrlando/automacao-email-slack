@@ -6,7 +6,7 @@ import requests
 import json
 from google import genai
 
-# Configurações de credenciais
+# Credenciais do ambiente
 EMAIL_USER = os.getenv("EMAIL_USUARIO")
 EMAIL_PASS = os.getenv("EMAIL_SENHA")
 GEMINI_KEY = os.getenv("GEMINI_API_KEY")
@@ -18,37 +18,43 @@ def buscar_e_processar():
     print("Conectando ao Gmail...")
     mail = imaplib.IMAP4_SSL("imap.gmail.com")
     mail.login(EMAIL_USER, EMAIL_PASS)
-    mail.select("inbox")
-    print("Conectado com sucesso!")
+    
+    # IMPORTANTE: Acessa "Todos os e-mails" para pegar mensagens com etiquetas como "Financeiro - NS"
+    mail.select('"[Gmail]/All Mail"')
+    print("Acessado '[Gmail]/All Mail' com sucesso!")
 
-    # Busca e-mails na caixa de entrada
     status, messages = mail.search(None, "ALL")
     email_ids = messages[0].split()
-    total_emails = len(email_ids)
     
-    # Aumentado para os últimos 100 e-mails
+    # Analisa os últimos 100 e-mails
     limite = 100
-    ultimos_ids = email_ids[-limite:] if total_emails >= limite else email_ids
-    print(f"Total de e-mails na caixa: {total_emails}. Verificando os últimos {len(ultimos_ids)}...")
+    ultimos_ids = email_ids[-limite:] if len(email_ids) >= limite else email_ids
+    print(f"Verificando os últimos {len(ultimos_ids)} e-mails da conta...")
 
     for e_id in ultimos_ids:
-        # Busca apenas o cabeçalho para ser mais rápido
+        # Busca o cabeçalho do e-mail
         res, msg_data = mail.fetch(e_id, "(BODY.PEEK[HEADER.FIELDS (SUBJECT)])")
         for response_part in msg_data:
             if isinstance(response_part, tuple):
                 msg = email.message_from_bytes(response_part[1])
                 
-                subject, encoding = decode_header(msg["Subject"])[0]
-                if isinstance(subject, bytes):
-                    subject = subject.decode(encoding or "utf-8", errors="ignore")
+                raw_subject = msg["Subject"]
+                subject = ""
+                if raw_subject:
+                    headers = decode_header(raw_subject)
+                    for text, encoding in headers:
+                        if isinstance(text, bytes):
+                            subject += text.decode(encoding or "utf-8", errors="ignore")
+                        else:
+                            subject += str(text)
                 
                 subject_lower = subject.lower()
                 
-                # Se encontrar o assunto correto, aí sim baixa o e-mail completo com anexo
+                # Checa se é um dos e-mails alvo
                 if any(p in subject_lower for p in PALAVRAS_CHAVE) and ("comprovante" in subject_lower or "pagamento" in subject_lower):
-                    print(f"\n✅ E-MAIL ALVO ENCONTRADO: {subject}")
+                    print(f"\n✅ E-MAIL ENCONTRADO: {subject}")
                     
-                    # Baixa o e-mail completo para pegar o PDF
+                    # Baixa a mensagem completa com o anexo
                     _, full_msg_data = mail.fetch(e_id, "(RFC822)")
                     for full_part in full_msg_data:
                         if isinstance(full_part, tuple):
@@ -56,7 +62,7 @@ def buscar_e_processar():
                             processar_anexos(full_msg, subject)
 
     mail.logout()
-    print("\nProcesso finalizado com sucesso!")
+    print("\nProcesso finalizado!")
 
 def processar_anexos(msg, assunto_email):
     for part in msg.walk():
@@ -67,13 +73,13 @@ def processar_anexos(msg, assunto_email):
         
         filename = part.get_filename()
         if filename and filename.lower().endswith('.pdf'):
-            print(f"📎 Baixando e analisando PDF: {filename}")
+            print(f"📎 Processando anexo: {filename}")
             pdf_data = part.get_payload(decode=True)
             
             with open("temporario.pdf", "wb") as f:
                 f.write(pdf_data)
             
-            print("🤖 Enviando anexo para análise do Gemini...")
+            print("🤖 Enviando PDF para análise no Gemini...")
             client = genai.Client(api_key=GEMINI_KEY)
             
             documento = client.files.upload(file="temporario.pdf")
@@ -96,15 +102,15 @@ def processar_anexos(msg, assunto_email):
             )
             
             resultado_ia = response.text.strip()
-            print(f"📋 Resposta da IA:\n{resultado_ia}")
+            print(f"📋 Diagnóstico do Gemini:\n{resultado_ia}")
             
             if "NADA" not in resultado_ia.upper():
                 enviar_para_slack(assunto_email, resultado_ia)
             else:
-                print("Nenhum erro 'CB REJECTED' encontrado neste PDF.")
+                print("Nenhum erro 'CB REJECTED' encontrado no anexo.")
 
 def enviar_para_slack(titulo_email, nomes_com_erro):
-    print("🚨 Disparando alerta no canal do Slack...")
+    print("🚨 Disparando notificação no Slack...")
     texto_mensagem = f"⚠️ *Erro de Pagamento Identificado (CB REJECTED)!*\n\n*E-mail de Origem:* {titulo_email}\n\n*Beneficiários com Erro:*\n{nomes_com_erro}"
     payload = {"text": texto_mensagem}
     requests.post(SLACK_URL, json=payload)
