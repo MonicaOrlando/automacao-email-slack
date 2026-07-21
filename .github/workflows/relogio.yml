@@ -18,8 +18,7 @@ jobs:
         python-version: '3.10'
 
     - name: Instalando as ferramentas necessárias
-      run: |
-        pip install google-genai requests
+      run: pip install google-genai requests pypdf
 
     - name: Rodando o Script principal
       env:
