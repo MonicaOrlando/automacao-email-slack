@@ -6,12 +6,13 @@ import requests
 import json
 import time
 from datetime import datetime
+from pypdf import PdfReader
 from google import genai
 
-# Aumenta o limite de bytes do IMAP
+# Aumenta o limite de bytes do IMAP para suportar listas grandes
 imaplib._MAXLINE = 10000000
 
-# Credenciais do ambiente
+# Credenciais do ambiente (GitHub Secrets)
 EMAIL_USER = os.getenv("EMAIL_USUARIO")
 EMAIL_PASS = os.getenv("EMAIL_SENHA")
 GEMINI_KEY = os.getenv("GEMINI_API_KEY")
@@ -78,6 +79,7 @@ def buscar_e_processar():
                 
                 subject_lower = subject.lower()
                 
+                # Verifica palavras-chave no assunto
                 if any(p in subject_lower for p in PALAVRAS_CHAVE) and ("comprovante" in subject_lower or "pagamento" in subject_lower):
                     print(f"\n✅ E-MAIL ALVO ENCONTRADO: {subject}")
                     
@@ -92,66 +94,74 @@ def buscar_e_processar():
 
 def processar_anexos(msg, assunto_email):
     for part in msg.walk():
-        if part.get_content_maintype() == 'multipart':
-            continue
-        if part.get('Content-Disposition') is None:
+        if part.get_content_maintype() == 'multipart' or part.get('Content-Disposition') is None:
             continue
         
         filename = part.get_filename()
         if filename and filename.lower().endswith('.pdf'):
-            print(f"📎 Processando anexo: {filename}")
+            print(f"\n📎 Analisando anexo: {filename}")
             pdf_data = part.get_payload(decode=True)
             
+            # Salva temporariamente
             with open("temporario.pdf", "wb") as f:
                 f.write(pdf_data)
             
-            # Pausa inicial de 10 segundos para dar tempo entre requisições
-            time.sleep(10)
+            # 1. Extração local de texto via Python (pypdf)
+            reader = PdfReader("temporario.pdf")
+            texto_pdf = ""
+            for page in reader.pages:
+                texto_pdf += page.extract_text() or ""
             
-            print("🤖 Enviando PDF para análise do Gemini...")
+            # Checa localmente se existe "CB Rejected"
+            if "CB REJECTED" not in texto_pdf.upper():
+                print("ℹ️ Nenhuma rejeição ('CB Rejected') identificada no texto do PDF.")
+                continue
+
+            print("🚨 ATENÇÃO: Status 'CB Rejected' detectado no PDF! Extraindo nomes com o Gemini...")
+            
+            # 2. Envia o texto extraído para o Gemini (Economiza cota de API)
             client = genai.Client(api_key=GEMINI_KEY)
             
-            documento = client.files.upload(file="temporario.pdf")
-            
-            prompt = """
-            Examine este relatório/comprovante bancário em PDF.
+            prompt = f"""
+            Analise o texto a seguir extraído de um relatório financeiro.
             
             Sua missão:
-            1. Procure por qualquer transação cujo "Status" seja "CB Rejected" ou "CB REJECTED".
-            2. Para CADA transação com status "CB Rejected", extraia o nome que está no campo "Beneficiary or Debit Party Name".
+            Identifique todas as transações com status 'CB Rejected' (ou 'CB REJECTED') e extraia apenas o nome do beneficiário/favorecido ("Beneficiary or Debit Party Name").
             
-            Instruções estritas de formato:
-            - Se encontrar transações com "CB Rejected", retorne apenas a lista com o nome dos beneficiários afetados (um por linha).
-            - Se NÃO houver nenhuma ocorrência de "CB Rejected", responda EXATAMENTE com a palavra: NADA
+            Texto do relatório:
+            {texto_pdf[:15000]}
+            
+            Resposta esperada:
+            Retorne APENAS uma lista simples com os nomes dos beneficiários rejeitados (um por linha). Se não encontrar o nome de nenhum, responda NADA.
             """
             
-            # 5 tentativas com pausa progressiva para contornar o limite de cota
+            sucesso = False
             for tentativa in range(5):
                 try:
                     response = client.models.generate_content(
                         model="gemini-2.0-flash",
-                        contents=[documento, prompt]
+                        contents=prompt
                     )
                     resultado_ia = response.text.strip()
-                    print(f"📋 Diagnóstico do Gemini:\n{resultado_ia}")
+                    print(f"📋 Resposta da IA:\n{resultado_ia}")
                     
                     if "NADA" not in resultado_ia.upper():
                         enviar_para_slack(assunto_email, resultado_ia)
-                    else:
-                        print("Nenhum erro 'CB Rejected' encontrado neste anexo.")
+                    sucesso = True
                     break
                 except Exception as e:
-                    if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
-                        tempo_espera = 25 + (tentativa * 10)
-                        print(f"⚠️ Limite de requisições atingido. Aguardando {tempo_espera}s para tentar novamente (Tentativa {tentativa + 1}/5)...")
-                        time.sleep(tempo_espera)
-                    else:
-                        print(f"❌ Erro ao consultar o Gemini: {e}")
-                        break
+                    tempo_espera = 20 + (tentativa * 10)
+                    print(f"⚠️ Erro ao consultar Gemini (Tentativa {tentativa + 1}/5): {e}. Aguardando {tempo_espera}s...")
+                    time.sleep(tempo_espera)
+            
+            # Fallback de segurança se a API falhar
+            if not sucesso:
+                print("❌ Não foi possível obter resposta do Gemini após retentativas. Enviando alerta direto ao Slack...")
+                enviar_para_slack(assunto_email, "⚠️ *Atenção:* O status 'CB Rejected' foi encontrado neste anexo, mas a cota da IA excedeu no momento. Favor verificar o comprovante anexado ao e-mail manualmente.")
 
 def enviar_para_slack(titulo_email, nomes_com_erro):
     print("🚨 Disparando notificação no Slack...")
-    texto_mensagem = f"⚠️ *Erro de Pagamento Identificado (CB Rejected)!*\n\n*E-mail de Origem:* {titulo_email}\n\n*Beneficiários com Erro:*\n{nomes_com_erro}"
+    texto_mensagem = f"⚠️ *Erro de Pagamento Identificado (CB Rejected)!*\n\n*E-mail de Origem:* {titulo_email}\n\n*Detalhes / Beneficiários com Erro:*\n{nomes_com_erro}"
     payload = {"text": texto_mensagem}
     requests.post(SLACK_URL, json=payload)
 
