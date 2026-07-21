@@ -92,22 +92,16 @@ def buscar_e_processar():
 def extrair_rejeicoes_python(texto_pdf):
     rejeicoes = []
     
-    # Divide o relatório pelas marcações das transações
-    # Usamos divisores comuns do CitiDirect
     blocos = re.split(r'Transaction Initiation Payment Details Report|Discount Rate', texto_pdf)
     
     for bloco in blocos:
         if "CB REJECTED" in bloco.upper():
-            # Busca o nome do beneficiário aceitando quebras de linha e barras
             match_nome = re.search(r'Beneficiary or Debit Party Name[\s\n]*\|?[\s\n]*([^\n\r|]+)', bloco, re.IGNORECASE)
-            
-            # Busca o valor aceitando quebras de linha
             match_valor = re.search(r'Payment Currency/Payment Amount[\s\n]*\|?[\s\n]*([^\n\r]+)', bloco, re.IGNORECASE)
             
             nome = match_nome.group(1).strip() if match_nome else None
             valor = match_valor.group(1).strip() if match_valor else None
             
-            # Fallback caso a expressão acima falhe por formato atípico
             if not nome:
                 linhas = [l.strip() for l in bloco.split('\n') if l.strip()]
                 for i, linha in enumerate(linhas):
@@ -163,7 +157,9 @@ def processar_anexos(msg, assunto_email):
 
 def enviar_para_slack(titulo_email, nomes_com_erro):
     print("🚨 Disparando notificação no Slack...")
-    texto_mensagem = f"⚠️ *Erro de Pagamento Identificado (CB Rejected)!*\n\n*E-mail de Origem:* {titulo_email}\n\n*Detalhes dos Lançamentos Rejeitados:*\n{nomes_com_erro}"
+    
+    # Notifica todos os participantes do canal
+    texto_mensagem = f"⚠️ <!channel> *Erro de Pagamento Identificado (CB Rejected)!*\n\n*E-mail de Origem:* {titulo_email}\n\n*Detalhes dos Lançamentos Rejeitados:*\n{nomes_com_erro}"
     payload = {"text": texto_mensagem}
     requests.post(SLACK_URL, json=payload)
 
