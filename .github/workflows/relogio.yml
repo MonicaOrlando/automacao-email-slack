@@ -30,6 +30,3 @@ jobs:
           EMAIL_SENHA: ${{ secrets.EMAIL_SENHA }}
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
         run: python script.py
-
-      - name: Impedir desativacao automatica
-        uses: gautamkrishnar/keepalive-workflow@v2
